@@ -29,7 +29,7 @@ module purge
 #Load the necessary modules for Analysis
 module load smrtlink/13.1 \
 module load samtools/1.17 \
-module load seqtk/1.3 \
+module load seqtk/1.3 
 
 #Load the necessary module for Mothur Processing (when running mothur_processing.py) \
 module load mothur/1.48
