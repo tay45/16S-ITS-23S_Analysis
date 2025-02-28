@@ -23,18 +23,18 @@ The pipeline comprises two Python scripts:
 ### Modules (Example Environment Setup)
 Below is an example of how to set up the environment using module commands:
 
-#Purge any loaded modules to start fresh
+#Purge any loaded modules to start fresh \
 module purge
 
 #Load the necessary modules for Analysis
 module load smrtlink/13.1 \
 module load samtools/1.17 \
-module load seqtk/1.3
+module load seqtk/1.3 \
 
-#Load the necessary module for Mothur Processing (when running mothur_processing.py)
+#Load the necessary module for Mothur Processing (when running mothur_processing.py) \
 module load mothur/1.48
 
-#Verify loaded modules
+#Verify loaded modules \
 module list
 
 ## Usage
