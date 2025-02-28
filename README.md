@@ -40,18 +40,18 @@ module list
 ## Usage
 
 ### 1. Running the 16S_rRNA_Sequencing_Analysis.py Script
-This script processes the input BAM file and converts it into combined FASTA and group files. It accepts the following key arguments:
+This script processes the input BAM file and converts it into combined FASTA and group files. It accepts the following key arguments: \
 
---input-bam: Path to the input BAM file.
---skip-skera: Flag to skip the Skera Split step.
---adapters-fasta: Path to the adapters FASTA file.
---barcodes-fasta: Path to the barcodes FASTA file.
---output-dir: Directory where all output files will be saved.
---athena-db: Path to the Athena database directory.
---barcode-type: Type of barcode (symmetric or asymmetric).
---sample-barcode-csv: Path to the sample barcode CSV file (must contain "Barcode" and "Sample Name" columns).
---convert-types: Format(s) for conversion (fasta and/or fastq).
---compression-level: Compression level for output files (1-9).
+--input-bam: Path to the input BAM file. \
+--skip-skera: Flag to skip the Skera Split step. \
+--adapters-fasta: Path to the adapters FASTA file. \
+--barcodes-fasta: Path to the barcodes FASTA file. \
+--output-dir: Directory where all output files will be saved. \
+--athena-db: Path to the Athena database directory. \
+--barcode-type: Type of barcode (symmetric or asymmetric). \
+--sample-barcode-csv: Path to the sample barcode CSV file (must contain "Barcode" and "Sample Name" columns). \
+--convert-types: Format(s) for conversion (fasta and/or fastq). \
+--compression-level: Compression level for output files (1-9). \
 --uncompressed: Flag to output uncompressed FASTA/FASTQ files.
 
 ### Example Command
