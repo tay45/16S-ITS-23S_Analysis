@@ -64,7 +64,7 @@ python3 16S_rRNA_Sequencing_Analysis.py \
     --athena-db "../sbanalyzer/lib/athena_v2_2" \
     --barcode-type asymmetric \
     --sample-barcode-csv "../sample-barcode.csv" \
-    --convert-types fasta fastq \
+    --convert-types fasta (or fastq) \
     --compression-level 1 \
     --uncompressed
 
