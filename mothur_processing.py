@@ -1,202 +1,225 @@
 #!/usr/bin/env python3
+"""
+mothur_processing_2_fixed.py (length‑filtered + group‑aware)
 
-import os
-import sys
+Pipeline steps
+--------------
+1. summary.seqs
+2. screen.seqs   (filters < min_len or > max_len, default 1 000–3 000 bp)
+3. classify.seqs (uses filtered *.good.fasta + *.good.groups)
+4. remove.lineage (optional)
+
+Change log
+~~~~~~~~~~
+2025‑07‑02 • FIX: correctly pass the group file produced by screen.seqs ("*.good.groups").
+2025‑07‑03 • FIX: use the correct parameter name (`taxon=`) in remove.lineage and allow a
+               plain‑text exclude file (one taxon per line) or a literal list.
+"""
+from __future__ import annotations
+
 import argparse
 import logging
-import subprocess
+import os
 import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import Optional
 
-def setup_logging(log_file, log_level='INFO'):
-    """
-    Sets up logging to both file and stdout with the specified log level.
-    """
-    numeric_level = getattr(logging, log_level.upper(), None)
-    if not isinstance(numeric_level, int):
-        print(f"Invalid log level: {log_level}")
-        sys.exit(1)
-    
-    # Ensure the directory for the log file exists
-    log_dir = os.path.dirname(log_file)
-    if log_dir and not os.path.exists(log_dir):
-        try:
-            os.makedirs(log_dir, exist_ok=True)
-            print(f"Created log directory: {log_dir}")
-        except Exception as e:
-            print(f"Failed to create log directory {log_dir}: {e}")
-            sys.exit(1)
-    
+# ───────────────────────── helpers ────────────────────────────────
+
+def setup_logging(log_file: str, level: str = "INFO") -> None:
+    Path(log_file).expanduser().parent.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
-        level=numeric_level,
-        format='[%(asctime)s] %(levelname)s: %(message)s',
-        handlers=[
-            logging.FileHandler(log_file),
-            logging.StreamHandler(sys.stdout)
-        ]
+        level=getattr(logging, level.upper(), logging.INFO),
+        format="[%(asctime)s] %(levelname)s: %(message)s",
+        handlers=[logging.FileHandler(log_file), logging.StreamHandler(sys.stdout)],
     )
-    
-    # Log the current PATH for debugging purposes
-    logging.debug(f"Current PATH: {os.environ.get('PATH')}")
+    logging.debug("Current PATH: %s", os.environ.get("PATH"))
 
-def run_mothur_command(mothur_path, command, description):
-    """
-    Runs a mothur command using subprocess and handles errors.
-    """
-    logging.info(f"Running mothur {description}...")
-    logging.debug(f"Executing command: {command}")
-    
-    # Verify that mothur_path exists and is executable
-    if not os.path.isfile(mothur_path):
-        logging.error(f"mothur executable not found at specified path: {mothur_path}")
-        sys.exit(1)
-    if not os.access(mothur_path, os.X_OK):
-        logging.error(f"mothur executable at {mothur_path} is not executable.")
-        sys.exit(1)
-    
+
+def run_mothur(mothur_path: str, cmd: str, label: str) -> None:
+    """Execute a mothur one‑liner and exit on failure."""
+    logging.info("Running mothur %s …", label)
+    logging.debug("Command: %s", cmd)
     try:
-        result = subprocess.run(
-            command,
+        res = subprocess.run(
+            cmd,
             shell=True,
             check=True,
+            text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True
         )
-        logging.debug(result.stdout)
-        if result.stderr.strip():
-            logging.warning(result.stderr.strip())
-        logging.info(f"mothur {description} completed successfully.")
+        if res.stdout:
+            logging.debug(res.stdout.strip())
+        if res.stderr:
+            logging.warning(res.stderr.strip())
+        logging.info("%s finished OK.", label)
     except subprocess.CalledProcessError as e:
-        logging.error(f"mothur {description} failed with error:\n{e.stderr}")
+        logging.error("%s failed:\n%s", label, e.stderr)
         sys.exit(1)
 
-def summarize_seqs(mothur_path, combined_fasta, processors):
-    """
-    Runs mothur's summary.seqs command on the combined FASTA file.
-    """
-    summary_cmd = f'"{mothur_path}" "#summary.seqs(fasta={combined_fasta}, processors={processors})"'
-    run_mothur_command(mothur_path, summary_cmd, "summary.seqs")
+# ───────────────────────── mothur steps ───────────────────────────
 
-def classify_seqs(mothur_path, combined_fasta, combined_group_file, reference_fasta, taxonomy_file, method, numwanted, search, processors, output_dir):
-    """
-    Runs mothur's classify.seqs command on the combined FASTA file.
-    """
-    classify_cmd = (
-        f'"{mothur_path}" "#classify.seqs(fasta={combined_fasta}, '
-        f'group={combined_group_file}, '
-        f'reference={reference_fasta}, '
-        f'taxonomy={taxonomy_file}, '
-        f'method={method}, '
-        f'numwanted={numwanted}, '
-        f'search={search}, '
-        f'processors={processors})"'
+def summary_seqs(mothur: str, fasta: str, procs: int) -> None:
+    cmd = f'"{mothur}" "#summary.seqs(fasta={fasta}, processors={procs})"'
+    run_mothur(mothur, cmd, "summary.seqs")
+
+
+def screen_seqs(
+    mothur: str,
+    fasta: str,
+    group: str,
+    min_len: int,
+    max_len: int,
+    procs: int,
+) -> tuple[str, str]:
+    cmd = (
+        f'"{mothur}" "#screen.seqs('
+        f'fasta={fasta}, group={group}, minlength={min_len}, '
+        f'maxlength={max_len}, maxambig=0, processors={procs})"'
     )
-    run_mothur_command(mothur_path, classify_cmd, "classify.seqs")
+    run_mothur(mothur, cmd, "screen.seqs")
 
-def remove_lineage(mothur_path, classified_fasta, classified_taxonomy, lineage_exclude):
-    """
-    Runs mothur's remove.lineage command to filter unclassified sequences.
-    """
-    lineage_cmd = (
-        f'"{mothur_path}" "#remove.lineage(fasta={classified_fasta}, '
-        f'taxonomy={classified_taxonomy}, '
-        f'lineage={lineage_exclude})"'
+    good_fasta = Path(fasta).with_suffix("").as_posix() + ".good.fasta"
+    good_group = Path(group).with_suffix("").as_posix() + ".good.groups"
+
+    for pth in (good_fasta, good_group):
+        if not Path(pth).is_file():
+            logging.error("screen.seqs did not create %s", pth)
+            sys.exit(1)
+
+    return good_fasta, good_group
+
+
+def classify_seqs(
+    mothur: str,
+    fasta: str,
+    group: str,
+    reference: str,
+    taxonomy: str,
+    method: str,
+    numwanted: int,
+    search: str,
+    procs: int,
+) -> None:
+    cmd = (
+        f'"{mothur}" "#classify.seqs('
+        f'fasta={fasta}, group={group}, reference={reference}, '
+        f'taxonomy={taxonomy}, method={method}, numwanted={numwanted}, '
+        f'search={search}, processors={procs})"'
     )
-    run_mothur_command(mothur_path, lineage_cmd, "remove.lineage")
+    run_mothur(mothur, cmd, "classify.seqs")
 
-def main():
-    parser = argparse.ArgumentParser(description="Mothur Processing Script")
-    parser.add_argument('--combined-fasta', required=True, help="Path to the combined FASTA file.")
-    parser.add_argument('--combined-group', required=True, help="Path to the combined group file.")
-    parser.add_argument('--output-dir', required=True, help="Output directory.")
-    parser.add_argument('--reference-fasta', required=True, help="Path to reference FASTA file.")
-    parser.add_argument('--taxonomy-file', required=True, help="Path to taxonomy file.")
-    parser.add_argument('--method', default='knn', help="Method for classification.")
-    parser.add_argument('--numwanted', type=int, default=1, help="Number of taxonomic classifications to keep per sequence.")
-    parser.add_argument('--search', default='blastplus', help="Search algorithm for classify.seqs.")
-    parser.add_argument('--processors', type=int, default=8, help="Number of processors to utilize.")
-    parser.add_argument('--remove-lineage', action='store_true', help="Flag to execute remove.lineage command to filter unclassified sequences.")
-    parser.add_argument('--lineage-exclude', default='lineage.exclude', help="Filename for lineage exclusion.")
-    parser.add_argument('--log-file', required=True, help="Log file name (including path).")
-    parser.add_argument('--mothur-path', default=None, help="Optional full path to mothur executable.")
-    
-    args = parser.parse_args()
-    
-    # Ensure output directory exists before setting up logging
-    os.makedirs(args.output_dir, exist_ok=True)
-    print(f"Output directory set to: {args.output_dir}")
-    
-    # Setup logging after ensuring output directory exists
-    setup_logging(args.log_file, 'DEBUG')  # Defaulting to DEBUG for detailed logs
-    
-    logging.info("Starting mothur_processing.py script.")
-    
-    # Determine mothur_path
-    if args.mothur_path:
-        mothur_path = args.mothur_path
-        if not os.path.isfile(mothur_path):
-            logging.error(f"Provided mothur path is not a file: {mothur_path}")
+
+def build_taxon_arg(lineage_exclude: str) -> str:
+    """Parse a lineage‑exclude file or literal list into a mothur taxon string."""
+    p = Path(lineage_exclude)
+    if p.is_file():
+        taxa = [ln.strip() for ln in p.read_text().splitlines() if ln.strip() and not ln.startswith('#')]
+        if not taxa:
+            logging.error("%s is empty — cannot build taxon list for remove.lineage", lineage_exclude)
             sys.exit(1)
-        if not os.access(mothur_path, os.X_OK):
-            logging.error(f"mothur executable at {mothur_path} is not executable.")
-            sys.exit(1)
-        logging.info(f"Using specified mothur path: {mothur_path}")
+        taxon_arg = "-".join(taxa)
     else:
-        mothur_path = shutil.which("mothur")
-        if not mothur_path:
-            logging.error("mothur executable not found in PATH.")
-            sys.exit(1)
-        else:
-            logging.info(f"mothur found at: {mothur_path}")
-    
-    # Summarize sequences
-    summarize_seqs(mothur_path, args.combined_fasta, args.processors)
-    
-    # Classify sequences
+        taxon_arg = lineage_exclude  # assume user passed literal list (e.g., "Chloroplast-Mitochondria")
+    logging.debug("remove.lineage taxon argument: %s", taxon_arg)
+    return taxon_arg
+
+
+def remove_lineage(
+    mothur: str,
+    fasta: str,
+    taxonomy: str,
+    lineage_exclude: str,
+) -> None:
+    taxon_arg = build_taxon_arg(lineage_exclude)
+    cmd = (
+        f'"{mothur}" "#remove.lineage('
+        f'fasta={fasta}, taxonomy={taxonomy}, taxon={taxon_arg})"'
+    )
+    run_mothur(mothur, cmd, "remove.lineage")
+
+# ───────────────────────── path resolver ──────────────────────────
+
+def resolve_mothur(user_path: Optional[str]) -> str:
+    DEFAULT = "/opt/mothur/1.48/bin/mothur"
+    mothur = user_path or shutil.which("mothur") or (DEFAULT if Path(DEFAULT).is_file() else None)
+    if not mothur or not Path(mothur).is_file():
+        logging.error("Cannot find mothur; pass --mothur-path or load module.")
+        sys.exit(1)
+    if not os.access(mothur, os.X_OK):
+        logging.error("mothur at %s is not executable.", mothur)
+        sys.exit(1)
+    return mothur
+
+# ─────────────────────────── main ────────────────────────────────
+
+def main() -> None:
+    p = argparse.ArgumentParser("Mothur processing pipeline")
+    p.add_argument("--combined-fasta", required=True)
+    p.add_argument("--combined-group", required=True)
+    p.add_argument("--output-dir", required=True)
+    p.add_argument("--reference-fasta", required=True)
+    p.add_argument("--taxonomy-file", required=True)
+    p.add_argument("--method", default="knn")
+    p.add_argument("--numwanted", type=int, default=1)
+    p.add_argument("--search", default="blastplus")
+    p.add_argument("--processors", type=int, default=8)
+    p.add_argument("--remove-lineage", action="store_true")
+    p.add_argument("--lineage-exclude", default="Chloroplast-Mitochondria")
+    p.add_argument("--min-length", type=int, default=1000)
+    p.add_argument("--max-length", type=int, default=3000)
+    p.add_argument("--log-file", required=True)
+    p.add_argument("--mothur-path")
+    args = p.parse_args()
+
+    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+    setup_logging(args.log_file, "DEBUG")
+
+    mothur = resolve_mothur(args.mothur_path)
+    logging.info("Using mothur: %s", mothur)
+
+    summary_seqs(mothur, args.combined_fasta, args.processors)
+
+    good_fasta, good_group = screen_seqs(
+        mothur,
+        fasta=args.combined_fasta,
+        group=args.combined_group,
+        min_len=args.min_length,
+        max_len=args.max_length,
+        procs=args.processors,
+    )
+
     classify_seqs(
-        mothur_path=mothur_path,
-        combined_fasta=args.combined_fasta,
-        combined_group_file=args.combined_group,
-        reference_fasta=args.reference_fasta,
-        taxonomy_file=args.taxonomy_file,
+        mothur,
+        fasta=good_fasta,
+        group=good_group,
+        reference=args.reference_fasta,
+        taxonomy=args.taxonomy_file,
         method=args.method,
         numwanted=args.numwanted,
         search=args.search,
-        processors=args.processors,
-        output_dir=args.output_dir
+        procs=args.processors,
     )
-    
-    # Optional: Remove lineage for unclassified sequences
+
     if args.remove_lineage:
-        # Determine the output taxonomy file generated by classify.seqs
-        # The output taxonomy file is usually named: <fasta_basename>.<taxonomy_basename>.<method>.taxonomy
-        # For example: filtered_combined.athena_v2_2.knn.taxonomy
-        fasta_basename = os.path.basename(args.combined_fasta).replace('.fasta', '')
-        taxonomy_basename = os.path.basename(args.taxonomy_file).replace('.tax', '')
-        method_basename = args.method
-        taxonomy_output_filename = f"{fasta_basename}.{taxonomy_basename}.{method_basename}.taxonomy"
-        classified_taxonomy = os.path.join(args.output_dir, taxonomy_output_filename)
-        
-        # Verify that the taxonomy file exists
-        if not os.path.isfile(classified_taxonomy):
-            logging.error(f"Expected taxonomy output file not found: {classified_taxonomy}")
-            logging.error("Please verify that classify.seqs ran correctly and generated the taxonomy file.")
+        base_fa = Path(good_fasta).stem
+        base_tax = Path(args.taxonomy_file).stem
+        tax_out = Path(args.output_dir) / f"{base_fa}.{base_tax}.{args.method}.taxonomy"
+        if not tax_out.is_file():
+            logging.error("Taxonomy file not found: %s", tax_out)
             sys.exit(1)
-        else:
-            logging.info(f"Found taxonomy file: {classified_taxonomy}")
-        
-        # Use the original combined_fasta for remove.lineage
-        classified_fasta = args.combined_fasta
-        
-        # Run remove.lineage
         remove_lineage(
-            mothur_path=mothur_path,
-            classified_fasta=classified_fasta,
-            classified_taxonomy=classified_taxonomy,
-            lineage_exclude=args.lineage_exclude
+            mothur,
+            fasta=good_fasta,
+            taxonomy=str(tax_out),
+            lineage_exclude=args.lineage_exclude,
         )
-    
-    logging.info("All mothur processing steps completed successfully.")
+
+    logging.info("Pipeline finished successfully.")
+
 
 if __name__ == "__main__":
     main()
